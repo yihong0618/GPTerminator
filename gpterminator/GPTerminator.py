@@ -17,6 +17,8 @@ import pyperclip
 import time
 import requests
 import climage
+import psycopg2
+
 
 class GPTerminator:
     def __init__(self):
@@ -35,7 +37,6 @@ class GPTerminator:
             "pconf": [None, "prints out the users current config file"],
             "setconf": [None, "switches to a new config"],
             "regen": ["r", "generates a new response from the last message"],
-            "new": ["n", "removes chat history and starts a new session"],
             "load": ["l", "loads a previously saved chatlog"],
             "save": ["s", "saves the chat history"],
             "ifile": [None, "allows the user to analyze files with a prompt"],
@@ -46,6 +47,7 @@ class GPTerminator:
         self.api_key = ""
         self.prompt_count = 0
         self.save_path = ""
+        self.cursor = None
         self.console = Console()
 
     def getConfigPath(self):
@@ -78,7 +80,9 @@ class GPTerminator:
         self.console.print(f"[bold bright_black]Command : description[/]")
         for cmd, desc in self.cmds.items():
             short = "" if desc[0] is None else f"({desc[0]})"
-            self.console.print(f"[bright_black]{self.cmd_init}{cmd} {short}: {desc[1]}[/]")
+            self.console.print(
+                f"[bright_black]{self.cmd_init}{cmd} {short}: {desc[1]}[/]"
+            )
 
     def saveChat(self):
         if self.prompt_count == 0:
@@ -112,7 +116,12 @@ class GPTerminator:
                     choice_list = []
                     for num, code_block in enumerate(code_block_list):
                         code_block = Syntax(code_block, lexer)
-                        choice = Panel(code_block, title=f"[bright_black]Option[/] [red]{num + 1}[/]", border_style="bright_black", style="bold")
+                        choice = Panel(
+                            code_block,
+                            title=f"[bright_black]Option[/] [red]{num + 1}[/]",
+                            border_style="bright_black",
+                            style="bold",
+                        )
                         choice_list.append(choice)
                     self.console.print(Columns(choice_list))
                     while True:
@@ -267,7 +276,7 @@ class GPTerminator:
             )
             user_in = prompt().strip()
             if os.path.exists(user_in):
-                with open(user_in, 'r') as file:
+                with open(user_in, "r") as file:
                     file_content = file.read()
                 break
             else:
@@ -286,10 +295,6 @@ class GPTerminator:
 
         msg = f"{user_prmt}: '{file_content}'"
         self.getResponse(msg)
-
-            
-
-
 
     def queryUser(self):
         self.console.print(
@@ -336,10 +341,6 @@ class GPTerminator:
                     self.useDalle()
                 elif cmd == "ifile":
                     self.analyzeFile()
-                elif cmd == "new" or cmd == "n":
-                    self.msg_hist = self.msg_hist[:1]
-                    self.prompt_count = 0
-                    self.printBanner()
             else:
                 self.printError(
                     f"{self.cmd_init}{cmd} in not in the list of commands, type {self.cmd_init}help"
@@ -347,8 +348,34 @@ class GPTerminator:
         else:
             return user_in
 
+    def _get_embeddings_str(self, user_prompt):
+        em = openai.Embedding.create(model="text-embedding-ada-002", input=user_prompt)
+        em = em["data"][0]["embedding"]
+        return em
+
+    def get_embed_text(self, user_prompt):
+        em = self._get_embeddings_str(user_prompt)
+        query = f"""SELECT text
+            FROM (
+                SELECT text, n_tokens, embeddings,
+                (embeddings <=> '{em}') AS distances,
+                SUM(n_tokens) OVER (ORDER BY (embeddings <=> '{em}')) AS cum_n_tokens
+                FROM documents
+                ) subquery
+            WHERE cum_n_tokens <= 1700 
+            ORDER BY distances ASC;"""
+        self.cursor.execute(query)
+        r = self.cursor.fetchall()
+        return ",".join([i[0] for i in r])
+
     def getResponse(self, usr_prompt):
-        self.msg_hist.append({"role": "user", "content": usr_prompt})
+        r = self.get_embed_text(usr_prompt)
+        prompt = f"You are an enthusiastic Postgres or Greenplum developer who loves Neon database and has a passion \
+        for helping answering developers might have. Answer the question asked by developers based on the context below. \
+        If the question can't be answered based on the context, say 'Sorry :( I don't know.'\n\nContext: {r}\n\n---\n\nQuestion: {usr_prompt}\nAnswer:"
+        # for me
+        self.msg_hist.clear()
+        self.msg_hist.append({"role": "user", "content": prompt})
         try:
             resp = openai.ChatCompletion.create(
                 model=self.model,
@@ -435,7 +462,6 @@ class GPTerminator:
 |_____|__|    |_| |___|_| |_|_|_|_|_|_|__,|_| |___|_|  
 """
         self.console.print(f"[bold green]{welcome_ascii}[/bold green]", end="")
-        self.console.print(f"[bright_black]Version: v0.1.10[/]")
         self.console.print(f"[bright_black]System prompt: {self.sys_prmpt}[/]")
         self.console.print(f"[bright_black]Model: {self.model}[/]")
         self.console.print(
@@ -443,7 +469,6 @@ class GPTerminator:
         )
 
     def checkDirs(self):
-
         # get paths
         if "APPDATA" in os.environ:
             confighome = os.environ["APPDATA"]
@@ -454,19 +479,23 @@ class GPTerminator:
         configpath = os.path.join(confighome, "gpterminator")
         savespath = os.path.join(configpath, "saves")
 
-        #check if paths/files exist
+        # check if paths/files exist
         config_exists = os.path.exists(os.path.join(configpath, "config.ini"))
         configpath_exists = os.path.exists(configpath)
         saves_exist = os.path.exists(savespath)
 
         if configpath_exists == False:
-            self.console.print(f"[bright_black]Initializing config path ({configpath})...[/]")
+            self.console.print(
+                f"[bright_black]Initializing config path ({configpath})...[/]"
+            )
             os.mkdir(configpath)
 
         # make paths/files
         if config_exists == False:
             full_config_path = os.path.join(configpath, "config.ini")
-            self.console.print(f"[bright_black]Initializing config file ({full_config_path})...[/]")
+            self.console.print(
+                f"[bright_black]Initializing config file ({full_config_path})...[/]"
+            )
             config = configparser.ConfigParser()
             config["SELECTED_CONFIG"] = {"configname": "BASE_CONFIG"}
             config["BASE_CONFIG"] = {
@@ -480,12 +509,20 @@ class GPTerminator:
             }
             with open(full_config_path, "w") as configfile:
                 config.write(configfile)
-        
+
         if saves_exist == False:
-            self.console.print(f"[bright_black]Initializing save path ({savespath})...[/]")
+            self.console.print(
+                f"[bright_black]Initializing save path ({savespath})...[/]"
+            )
             os.mkdir(savespath)
 
+    def set_pg(self):
+        conn_str = os.environ.get("DATABASE_URL")
+        conn = psycopg2.connect(conn_str)
+        self.cursor = conn.cursor()
+
     def run(self):
+        self.set_pg()
         self.checkDirs()
         self.loadConfig()
         if not os.path.exists(self.save_path):

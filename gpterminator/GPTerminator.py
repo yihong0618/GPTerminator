@@ -370,7 +370,7 @@ class GPTerminator:
 
     def getResponse(self, usr_prompt):
         r = self.get_embed_text(usr_prompt)
-        prompt = f"You are an enthusiastic Postgres or Greenplum developer who loves Neon database and has a passion \
+        prompt = f"You are an enthusiastic Postgres or Greenplum developer who loves Greenplum database and has a passion \
         for helping answering developers might have. Answer the question asked by developers based on the context below. \
         If the question can't be answered based on the context, say 'Sorry :( I don't know.'\n\nContext: {r}\n\n---\n\nQuestion: {usr_prompt}\nAnswer:"
         # for me
